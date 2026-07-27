@@ -1,6 +1,7 @@
 #ifndef WEBCAM2IP_CAPTURE_H
 #define WEBCAM2IP_CAPTURE_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -61,6 +62,25 @@ w2i_capture_result_t w2i_capture_frame_rgba(int32_t timeout_ms, w2i_frame_t *out
 /* Frees the buffer in *frame (if any) and zeroes it. Safe to call on an
  * already-freed or zeroed frame. */
 void w2i_free_frame(w2i_frame_t *frame);
+
+typedef struct {
+    /* malloc()'d JPEG bytes. Owned by the caller once returned; free
+     * with w2i_free_jpeg(). */
+    uint8_t *data;
+    int64_t length;
+} w2i_jpeg_t;
+
+/*
+ * Encodes tightly-packed RGBA8 pixels (bytes_per_row == width * 4) to
+ * JPEG via ImageIO. Pure function of its inputs -- no camera/session
+ * involved, callable from any thread, safe to unit test without
+ * hardware. Returns false (and zeroes *out_jpeg) on encode failure.
+ */
+bool w2i_encode_jpeg_rgba(const uint8_t *rgba, int32_t width, int32_t height, int32_t bytes_per_row, w2i_jpeg_t *out_jpeg);
+
+/* Frees the buffer in *jpeg (if any) and zeroes it. Safe to call on an
+ * already-freed or zeroed jpeg. */
+void w2i_free_jpeg(w2i_jpeg_t *jpeg);
 
 #ifdef __cplusplus
 }

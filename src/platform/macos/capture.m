@@ -1,6 +1,8 @@
 #import "capture.h"
 #import <AVFoundation/AVFoundation.h>
+#import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
+#import <ImageIO/ImageIO.h>
 
 static void pumpRunLoopUntil(NSDate *deadline, BOOL (^done)(void)) {
     while (!done() && [deadline timeIntervalSinceNow] > 0) {
@@ -224,5 +226,65 @@ void w2i_free_frame(w2i_frame_t *frame) {
     if (frame != NULL && frame->data != NULL) {
         free(frame->data);
         frame->data = NULL;
+    }
+}
+
+bool w2i_encode_jpeg_rgba(const uint8_t *rgba, int32_t width, int32_t height, int32_t bytes_per_row, w2i_jpeg_t *out_jpeg) {
+    out_jpeg->data = NULL;
+    out_jpeg->length = 0;
+
+    @autoreleasepool {
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+        CGDataProviderRef provider = CGDataProviderCreateWithData(
+            NULL, rgba, (size_t)bytes_per_row * (size_t)height, NULL);
+        CGImageRef cgImage = CGImageCreate(
+            (size_t)width, (size_t)height,
+            /* bitsPerComponent */ 8, /* bitsPerPixel */ 32, (size_t)bytes_per_row,
+            colorSpace, kCGBitmapByteOrderDefault | kCGImageAlphaNoneSkipLast,
+            provider, NULL, false, kCGRenderingIntentDefault);
+        CGDataProviderRelease(provider);
+        CGColorSpaceRelease(colorSpace);
+
+        if (cgImage == NULL) {
+            return false;
+        }
+
+        CFMutableDataRef jpegData = CFDataCreateMutable(kCFAllocatorDefault, 0);
+        CGImageDestinationRef dest = CGImageDestinationCreateWithData(jpegData, CFSTR("public.jpeg"), 1, NULL);
+        if (dest == NULL) {
+            CGImageRelease(cgImage);
+            CFRelease(jpegData);
+            return false;
+        }
+
+        CGImageDestinationAddImage(dest, cgImage, NULL);
+        bool finalized = CGImageDestinationFinalize(dest);
+        CFRelease(dest);
+        CGImageRelease(cgImage);
+
+        if (!finalized) {
+            CFRelease(jpegData);
+            return false;
+        }
+
+        CFIndex length = CFDataGetLength(jpegData);
+        uint8_t *buffer = malloc((size_t)length);
+        if (buffer == NULL) {
+            CFRelease(jpegData);
+            return false;
+        }
+        CFDataGetBytes(jpegData, CFRangeMake(0, length), buffer);
+        CFRelease(jpegData);
+
+        out_jpeg->data = buffer;
+        out_jpeg->length = (int64_t)length;
+        return true;
+    }
+}
+
+void w2i_free_jpeg(w2i_jpeg_t *jpeg) {
+    if (jpeg != NULL && jpeg->data != NULL) {
+        free(jpeg->data);
+        jpeg->data = NULL;
     }
 }

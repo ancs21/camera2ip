@@ -88,3 +88,51 @@ pub fn captureFrameRgba(timeout_ms: i32) CaptureFrameError!Frame {
 pub fn freeFrame(frame: *Frame) void {
     w2i_free_frame(frame);
 }
+
+extern "c" fn w2i_encode_jpeg_rgba(rgba: [*]const u8, width: i32, height: i32, bytes_per_row: i32, out_jpeg: *Jpeg) bool;
+extern "c" fn w2i_free_jpeg(jpeg: *Jpeg) void;
+
+/// Mirrors w2i_jpeg_t in capture.h. `data` is malloc()'d C-side; free it
+/// with `freeJpeg` once done.
+pub const Jpeg = extern struct {
+    data: ?[*]u8 = null,
+    length: i64 = 0,
+};
+
+/// Encodes tightly-packed RGBA8 pixels (bytes_per_row == width*4) to
+/// JPEG via ImageIO. Pure function of its inputs -- no camera/session
+/// involved. Caller must `freeJpeg` the result on success.
+pub fn encodeJpegRgba(width: i32, height: i32, bytes_per_row: i32, rgba: []const u8) error{EncodeFailed}!Jpeg {
+    var jpeg: Jpeg = .{};
+    if (!w2i_encode_jpeg_rgba(rgba.ptr, width, height, bytes_per_row, &jpeg)) {
+        return error.EncodeFailed;
+    }
+    return jpeg;
+}
+
+pub fn freeJpeg(jpeg: *Jpeg) void {
+    w2i_free_jpeg(jpeg);
+}
+
+test "encodeJpegRgba produces bytes with valid JPEG SOI/EOI markers" {
+    // 4x4 solid-red RGBA, tightly packed -- content doesn't matter here,
+    // only that ImageIO actually produces a real JPEG bitstream.
+    var rgba: [4 * 4 * 4]u8 = undefined;
+    var i: usize = 0;
+    while (i < rgba.len) : (i += 4) {
+        rgba[i] = 255;
+        rgba[i + 1] = 0;
+        rgba[i + 2] = 0;
+        rgba[i + 3] = 255;
+    }
+
+    var jpeg = try encodeJpegRgba(4, 4, 16, &rgba);
+    defer freeJpeg(&jpeg);
+
+    try std.testing.expect(jpeg.length > 2);
+    const bytes = jpeg.data.?[0..@intCast(jpeg.length)];
+    try std.testing.expectEqual(@as(u8, 0xFF), bytes[0]);
+    try std.testing.expectEqual(@as(u8, 0xD8), bytes[1]); // SOI marker
+    try std.testing.expectEqual(@as(u8, 0xFF), bytes[bytes.len - 2]);
+    try std.testing.expectEqual(@as(u8, 0xD9), bytes[bytes.len - 1]); // EOI marker
+}

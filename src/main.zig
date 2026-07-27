@@ -49,14 +49,26 @@ pub fn main(init: std.process.Init) !void {
     var mutable_frame = frame;
     defer macos.freeFrame(&mutable_frame);
 
-    var file = try Io.Dir.cwd().createFile(io, "frame.ppm", .{});
-    defer file.close(io);
-    var file_write_buf: [4096]u8 = undefined;
-    var file_writer = file.writer(io, &file_write_buf);
-    try writePpm(&file_writer.interface, frame.width, frame.height, frame.bytes_per_row, frame.data.?[0..@intCast(frame.bytes_per_row * frame.height)]);
-    try file_writer.interface.flush();
+    const rgba = frame.data.?[0..@intCast(frame.bytes_per_row * frame.height)];
 
-    try stdout.print("wrote frame.ppm ({d}x{d})\n", .{ frame.width, frame.height });
+    var ppm_file = try Io.Dir.cwd().createFile(io, "frame.ppm", .{});
+    defer ppm_file.close(io);
+    var ppm_write_buf: [4096]u8 = undefined;
+    var ppm_writer = ppm_file.writer(io, &ppm_write_buf);
+    try writePpm(&ppm_writer.interface, frame.width, frame.height, frame.bytes_per_row, rgba);
+    try ppm_writer.interface.flush();
+
+    var jpeg = try macos.encodeJpegRgba(frame.width, frame.height, frame.bytes_per_row, rgba);
+    defer macos.freeJpeg(&jpeg);
+
+    var jpeg_file = try Io.Dir.cwd().createFile(io, "frame.jpg", .{});
+    defer jpeg_file.close(io);
+    var jpeg_write_buf: [4096]u8 = undefined;
+    var jpeg_writer = jpeg_file.writer(io, &jpeg_write_buf);
+    try jpeg_writer.interface.writeAll(jpeg.data.?[0..@intCast(jpeg.length)]);
+    try jpeg_writer.interface.flush();
+
+    try stdout.print("wrote frame.ppm and frame.jpg ({d}x{d})\n", .{ frame.width, frame.height });
     try stdout.flush();
 }
 
