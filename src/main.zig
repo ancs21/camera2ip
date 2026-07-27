@@ -18,7 +18,22 @@ pub fn main(init: std.process.Init) !void {
 
     try writeBanner(stdout);
     try stdout.print("objc shim greeting length: {d}\n", .{macos.shimGreetingLength()});
+    try stdout.writeAll("starting camera capture probe on a dedicated thread (grant the permission prompt if macOS shows one)...\n");
     try stdout.flush();
+
+    var probe_result: macos.CaptureProbeResult = undefined;
+    const probe_thread = try std.Thread.spawn(.{}, runCaptureProbeThread, .{&probe_result});
+    probe_thread.join();
+
+    try stdout.print("capture probe result: {s}\n", .{@tagName(probe_result)});
+    try stdout.flush();
+}
+
+fn runCaptureProbeThread(out_result: *macos.CaptureProbeResult) void {
+    // 20s per phase (permission wait, first-frame wait) -- generous
+    // enough for a human to notice and click the permission prompt
+    // during manual testing, still bounded so it can't hang forever.
+    out_result.* = macos.captureProbe(20_000);
 }
 
 // Spike code proving Zig 0.16's Io.net stack works, in isolation from

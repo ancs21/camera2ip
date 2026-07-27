@@ -12,11 +12,15 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    exe.root_module.addCSourceFile(.{
-        .file = b.path("src/platform/macos/shim.m"),
+    exe.root_module.addCSourceFiles(.{
+        .root = b.path("src/platform/macos"),
+        .files = &.{ "shim.m", "capture.m" },
         .flags = &.{"-fobjc-arc"},
     });
     exe.root_module.linkFramework("Foundation", .{});
+    exe.root_module.linkFramework("AVFoundation", .{});
+    exe.root_module.linkFramework("CoreMedia", .{});
+    exe.root_module.linkFramework("CoreVideo", .{});
     exe.root_module.linkSystemLibrary("objc", .{});
     exe.root_module.link_libc = true;
 
