@@ -23,7 +23,7 @@ Full detail (acceptance criteria, verification, files, sizing) in `tasks/plan.md
 - [ ] Camera permission / TCC behavior observed on-device (not just designed around)
 
 ## Phase 2: Networked snapshot
-- [ ] T8 — HTTP server skeleton (M)
+- [x] T8 — HTTP server skeleton (M)
 - [ ] T9 — Long-lived capture loop + mutex-guarded latest-frame slot (M/L, second-highest risk)
 - [ ] T10 — Wire `/snapshot.jpg` (S)
 
