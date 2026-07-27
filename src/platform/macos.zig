@@ -114,7 +114,7 @@ pub fn freeJpeg(jpeg: *Jpeg) void {
     w2i_free_jpeg(jpeg);
 }
 
-pub const FrameCallback = *const fn (rgba: [*]const u8, width: i32, height: i32, bytes_per_row: i32) callconv(.c) void;
+pub const FrameCallback = *const fn (rgba: [*]u8, width: i32, height: i32, bytes_per_row: i32) callconv(.c) void;
 
 extern "c" fn w2i_capture_run_continuous(setup_timeout_ms: i32, callback: FrameCallback) i32;
 
@@ -124,6 +124,34 @@ extern "c" fn w2i_capture_run_continuous(setup_timeout_ms: i32, callback: FrameC
 /// call from a dedicated thread that lives for the process lifetime.
 pub fn runCaptureContinuous(setup_timeout_ms: i32, callback: FrameCallback) CaptureResult {
     return @enumFromInt(w2i_capture_run_continuous(setup_timeout_ms, callback));
+}
+
+extern "c" fn w2i_get_process_stats(out_cpu_seconds: *f64, out_rss_bytes: *i64) void;
+
+pub const ProcessStats = struct {
+    /// Total user+sys CPU time consumed by this process so far.
+    cpu_seconds: f64,
+    /// Peak resident set size, in bytes.
+    rss_bytes: i64,
+};
+
+/// Snapshot of this process's cumulative CPU time and peak RSS.
+/// Callers compute CPU% themselves from the delta between two samples
+/// over a known wall-clock interval.
+pub fn getProcessStats() ProcessStats {
+    var stats: ProcessStats = undefined;
+    w2i_get_process_stats(&stats.cpu_seconds, &stats.rss_bytes);
+    return stats;
+}
+
+extern "c" fn w2i_draw_overlay_rgba(rgba: [*]u8, width: i32, height: i32, bytes_per_row: i32, text: [*:0]const u8) void;
+
+/// Draws `text` as a single line, top-left, over a translucent
+/// background box, directly into `rgba` in place (tightly packed,
+/// bytes_per_row == width*4). Pure function of its inputs -- no
+/// camera/session involved.
+pub fn drawOverlayRgba(rgba: []u8, width: i32, height: i32, bytes_per_row: i32, text: [:0]const u8) void {
+    w2i_draw_overlay_rgba(rgba.ptr, width, height, bytes_per_row, text.ptr);
 }
 
 test "encodeJpegRgba produces bytes with valid JPEG SOI/EOI markers" {

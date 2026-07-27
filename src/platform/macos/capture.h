@@ -83,9 +83,10 @@ bool w2i_encode_jpeg_rgba(const uint8_t *rgba, int32_t width, int32_t height, in
 void w2i_free_jpeg(w2i_jpeg_t *jpeg);
 
 /* Called synchronously on the capture delegate's serial queue for every
- * frame -- keep it fast. rgba is only valid for the duration of the
+ * frame -- keep it fast. rgba is mutable (callers may draw an overlay
+ * in place before encoding) but only valid for the duration of the
  * call (freed immediately after); copy anything you need to keep. */
-typedef void (*w2i_frame_callback_t)(const uint8_t *rgba, int32_t width, int32_t height, int32_t bytes_per_row);
+typedef void (*w2i_frame_callback_t)(uint8_t *rgba, int32_t width, int32_t height, int32_t bytes_per_row);
 
 /*
  * Starts a persistent AVCaptureSession on the CALLING thread (same
@@ -97,6 +98,21 @@ typedef void (*w2i_frame_callback_t)(const uint8_t *rgba, int32_t width, int32_t
  * lives for the process lifetime.
  */
 w2i_capture_result_t w2i_capture_run_continuous(int32_t setup_timeout_ms, w2i_frame_callback_t callback);
+
+/* Total user+sys CPU time consumed by this process so far, and its peak
+ * resident set size in bytes (getrusage(RUSAGE_SELF, ...) under the
+ * hood -- macOS reports ru_maxrss in bytes, not KB like Linux). Callers
+ * compute CPU% themselves from the delta between two samples over a
+ * known wall-clock interval. */
+void w2i_get_process_stats(double *out_cpu_seconds, int64_t *out_rss_bytes);
+
+/*
+ * Draws `text` as a single line, top-left, over a translucent
+ * background box, directly into `rgba` in place (tightly packed,
+ * bytes_per_row == width * 4). Pure function of its inputs -- no
+ * camera/session involved, callable from any thread.
+ */
+void w2i_draw_overlay_rgba(uint8_t *rgba, int32_t width, int32_t height, int32_t bytes_per_row, const char *text);
 
 #ifdef __cplusplus
 }

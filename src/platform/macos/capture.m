@@ -1,8 +1,10 @@
 #import "capture.h"
 #import <AVFoundation/AVFoundation.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <CoreText/CoreText.h>
 #import <Foundation/Foundation.h>
 #import <ImageIO/ImageIO.h>
+#import <sys/resource.h>
 
 static void pumpRunLoopUntil(NSDate *deadline, BOOL (^done)(void)) {
     while (!done() && [deadline timeIntervalSinceNow] > 0) {
@@ -396,5 +398,76 @@ w2i_capture_result_t w2i_capture_run_continuous(int32_t setup_timeout_ms, w2i_fr
         while (true) {
             [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate distantFuture]];
         }
+    }
+}
+
+void w2i_get_process_stats(double *out_cpu_seconds, int64_t *out_rss_bytes) {
+    struct rusage usage;
+    if (getrusage(RUSAGE_SELF, &usage) != 0) {
+        *out_cpu_seconds = 0;
+        *out_rss_bytes = 0;
+        return;
+    }
+    double user = (double)usage.ru_utime.tv_sec + (double)usage.ru_utime.tv_usec / 1e6;
+    double sys = (double)usage.ru_stime.tv_sec + (double)usage.ru_stime.tv_usec / 1e6;
+    *out_cpu_seconds = user + sys;
+    *out_rss_bytes = (int64_t)usage.ru_maxrss; /* macOS: bytes, not KB */
+}
+
+void w2i_draw_overlay_rgba(uint8_t *rgba, int32_t width, int32_t height, int32_t bytes_per_row, const char *text) {
+    @autoreleasepool {
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+        CGContextRef ctx = CGBitmapContextCreate(rgba, (size_t)width, (size_t)height, 8, (size_t)bytes_per_row,
+                                                  colorSpace, kCGBitmapByteOrderDefault | kCGImageAlphaNoneSkipLast);
+        CGColorSpaceRelease(colorSpace);
+        if (ctx == NULL) {
+            return;
+        }
+
+        /* Deliberately NOT flipping the CTM here. CGBitmapContext's
+         * native drawing coordinate system has (0,0) at the bottom-left
+         * with Y increasing upward, which maps directly onto the rgba
+         * buffer's row-major top-to-bottom memory layout: Cartesian
+         * y=height addresses the buffer's first row (visual top),
+         * y=0 addresses the last row (visual bottom) -- no flip needed
+         * to reach "near the top," just a Y position close to `height`.
+         * An earlier version flipped the CTM to make y=0 mean "top,"
+         * which also flipped CoreText's glyph rendering and produced
+         * mirrored/upside-down text -- CoreText assumes a specific
+         * handedness that a blanket CTM flip breaks. */
+        NSString *nsText = [NSString stringWithUTF8String:text];
+        if (nsText == nil) {
+            CGContextRelease(ctx);
+            return;
+        }
+
+        CTFontRef font = CTFontCreateWithName(CFSTR("Menlo"), 16.0, NULL);
+        CGColorRef white = CGColorCreateGenericRGB(1, 1, 1, 1);
+        NSDictionary *attrs = @{
+            (id)kCTFontAttributeName : (__bridge id)font,
+            (id)kCTForegroundColorAttributeName : (__bridge id)white,
+        };
+        CFAttributedStringRef attrString =
+            CFAttributedStringCreate(kCFAllocatorDefault, (__bridge CFStringRef)nsText, (__bridge CFDictionaryRef)attrs);
+        CTLineRef line = CTLineCreateWithAttributedString(attrString);
+        CGRect bounds = CTLineGetBoundsWithOptions(line, kCTLineBoundsUseGlyphPathBounds);
+
+        CGFloat padding = 6;
+        CGFloat boxWidth = bounds.size.width + padding * 2;
+        CGFloat boxHeight = bounds.size.height + padding * 2;
+        CGFloat boxBottomY = (CGFloat)height - boxHeight; // near the top of the image
+        CGContextSetRGBFillColor(ctx, 0, 0, 0, 0.6);
+        CGContextFillRect(ctx, CGRectMake(0, boxBottomY, boxWidth, boxHeight));
+
+        /* Baseline positioned so the glyphs sit inside the box, in the
+         * context's native (unflipped) coordinate system. */
+        CGContextSetTextPosition(ctx, padding, boxBottomY + padding - bounds.origin.y);
+        CTLineDraw(line, ctx);
+
+        CFRelease(line);
+        CFRelease(attrString);
+        CGColorRelease(white);
+        CFRelease(font);
+        CGContextRelease(ctx);
     }
 }
