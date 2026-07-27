@@ -43,10 +43,18 @@ pub fn main(init: std.process.Init) !void {
     const capture_thread = try std.Thread.spawn(.{}, runCaptureLoopThread, .{ io, gpa });
     capture_thread.detach();
 
-    const address = try Io.net.IpAddress.parseLiteral("127.0.0.1:8080");
+    // 0.0.0.0, not 127.0.0.1: reachable from other devices on the local
+    // network, not just this machine -- the whole point of "webcam2ip."
+    // No auth (deliberate v1 scope), so anyone on the same network can
+    // reach the stream/snapshot; fine for a home LAN, not for anything
+    // more exposed.
+    const address = try Io.net.IpAddress.parseLiteral("0.0.0.0:8080");
     const http_thread = try std.Thread.spawn(.{}, runHttpThread, .{ io, gpa, address });
     http_thread.detach();
-    try stdout.writeAll("listening on 127.0.0.1:8080 (GET /snapshot.jpg)\n");
+    try stdout.writeAll(
+        "listening on 0.0.0.0:8080 -- reachable at http://<this-machine's-LAN-IP>:8080\n" ++
+            "find your LAN IP with: ipconfig getifaddr $(route get default | awk '/interface:/{print $2}')\n",
+    );
     try stdout.flush();
 
     // Debug harness: also soak-tests the capture hand-off directly, in
