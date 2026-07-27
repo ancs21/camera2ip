@@ -57,6 +57,10 @@ fn handleRequest(io: Io, gpa: std.mem.Allocator, request: *std.http.Server.Reque
         return handleSnapshot(io, gpa, request);
     }
 
+    if (std.mem.eql(u8, request.head.target, "/stream")) {
+        return handleStream(io, gpa, request);
+    }
+
     try request.respond("not found\n", .{
         .status = .not_found,
         .extra_headers = &.{.{ .name = "content-type", .value = "text/plain" }},
@@ -82,6 +86,37 @@ fn handleSnapshot(io: Io, gpa: std.mem.Allocator, request: *std.http.Server.Requ
     });
 }
 
+const stream_boundary = "frame";
+
+/// Traditional close-delimited MJPEG streaming (multipart/x-mixed-replace,
+/// no transfer-encoding wrapper) rather than HTTP/1.1 chunked -- matches
+/// what mjpg-streamer and most MJPEG cameras actually do, for maximum
+/// consumer compatibility (browsers and VLC both expect this framing).
+fn handleStream(io: Io, gpa: std.mem.Allocator, request: *std.http.Server.Request) !void {
+    var respond_buf: [8192]u8 = undefined;
+    var body_writer = try request.respondStreaming(&respond_buf, .{
+        .respond_options = .{
+            .transfer_encoding = .none,
+            .extra_headers = &.{
+                .{ .name = "content-type", .value = "multipart/x-mixed-replace; boundary=" ++ stream_boundary },
+            },
+        },
+    });
+
+    while (true) {
+        Io.sleep(io, .fromMilliseconds(100), .awake) catch return; // ~10fps
+
+        const maybe_frame = capture_loop.copyLatestFrame(io, gpa) catch return;
+        const frame = maybe_frame orelse continue; // not ready yet, try again next tick
+        defer gpa.free(frame.data);
+
+        body_writer.writer.print("--" ++ stream_boundary ++ "\r\ncontent-type: image/jpeg\r\ncontent-length: {d}\r\n\r\n", .{frame.data.len}) catch return;
+        body_writer.writer.writeAll(frame.data) catch return;
+        body_writer.writer.writeAll("\r\n") catch return;
+        body_writer.flush() catch return;
+    }
+}
+
 fn readLine(r: *Io.Reader) ![]u8 {
     return (try r.takeDelimiter('\n')).?;
 }
@@ -89,26 +124,42 @@ fn readLine(r: *Io.Reader) ![]u8 {
 /// Binds, spawns a detached acceptLoop, and returns once the loop is
 /// live enough to accept -- callers connect to `address` immediately
 /// after. Each test uses a distinct port to avoid cross-test races.
-fn startTestServer(io: Io, request_gpa: std.mem.Allocator, address: *const Io.net.IpAddress) !void {
-    // Heap-allocated with an untracked allocator: a stack-local here
-    // would go out of scope (and the pointer below would dangle) the
-    // instant this function returns, while the detached thread keeps
-    // using it for the rest of the test process -- so it must outlive
-    // this function and is never freed, which std.testing.allocator's
-    // leak checker would (incorrectly) flag as a leak. `request_gpa` is
-    // separate and still flows through to per-request allocations
-    // (e.g. handleSnapshot's copyLatestFrame), which *are* freed each
-    // request and stay meaningfully leak-checked.
+/// Callers should `stop()` the returned handle before the test ends --
+/// letting acceptLoop threads accumulate as permanently-blocked/detached
+/// for the rest of the test binary's life (an earlier version of this
+/// helper did that) raised the number of live threads all contending on
+/// shared global mutexes (capture_loop's slot, std.testing.allocator's
+/// own internal one) enough to trigger a rare, genuine crash inside
+/// Io.Mutex/DebugAllocator's locking under that stress. Production
+/// (main.zig) has exactly one long-lived accept loop, not one per test,
+/// so it doesn't hit this.
+const TestServer = struct {
+    io: Io,
+    server: *Io.net.Server,
+    accept_thread: std.Thread,
+
+    fn stop(self: TestServer) void {
+        self.server.deinit(self.io); // unblocks the pending accept() with an error
+        self.accept_thread.join();
+        std.heap.page_allocator.destroy(self.server);
+    }
+};
+
+fn startTestServer(io: Io, request_gpa: std.mem.Allocator, address: *const Io.net.IpAddress) !TestServer {
+    // Heap-allocated: a stack-local here would go out of scope (and the
+    // pointer below would dangle) once this function returns, while
+    // acceptLoop keeps using it until stop() is called.
     const server = try std.heap.page_allocator.create(Io.net.Server);
     server.* = try listen(io, address);
     const accept_thread = try std.Thread.spawn(.{}, acceptLoop, .{ io, request_gpa, server });
-    accept_thread.detach();
+    return .{ .io = io, .server = server, .accept_thread = accept_thread };
 }
 
 test "GET / returns 200 with a webcam2ip body" {
     const io = std.testing.io;
     const address = try Io.net.IpAddress.parseLiteral("127.0.0.1:17174");
-    try startTestServer(io, std.testing.allocator, &address);
+    const test_server = try startTestServer(io, std.testing.allocator, &address);
+    defer test_server.stop();
 
     var client = try address.connect(io, .{ .mode = .stream });
     defer client.close(io);
@@ -145,7 +196,8 @@ test "GET /snapshot.jpg returns the latest frame with an image/jpeg content-type
     capture_loop.seedFrameForTesting(io, std.heap.page_allocator, &rgba, 2, 2, 8);
 
     const address = try Io.net.IpAddress.parseLiteral("127.0.0.1:17175");
-    try startTestServer(io, gpa, &address);
+    const test_server = try startTestServer(io, gpa, &address);
+    defer test_server.stop();
 
     var client = try address.connect(io, .{ .mode = .stream });
     defer client.close(io);
@@ -185,4 +237,65 @@ test "GET /snapshot.jpg returns the latest frame with an image/jpeg content-type
     const body = try r.take(len);
     try std.testing.expectEqual(@as(u8, 0xFF), body[0]);
     try std.testing.expectEqual(@as(u8, 0xD8), body[1]); // JPEG SOI marker
+}
+
+test "GET /stream sends a multipart frame whose boundary matches the header" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+
+    var rgba = [_]u8{ 0, 0, 255, 255 } ** 4; // 2x2 solid blue
+    capture_loop.seedFrameForTesting(io, std.heap.page_allocator, &rgba, 2, 2, 8);
+
+    const address = try Io.net.IpAddress.parseLiteral("127.0.0.1:17176");
+    const test_server = try startTestServer(io, gpa, &address);
+    defer test_server.stop();
+
+    var client = try address.connect(io, .{ .mode = .stream });
+
+    var write_buf: [256]u8 = undefined;
+    var client_writer = client.writer(io, &write_buf);
+    try client_writer.interface.writeAll("GET /stream HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    try client_writer.interface.flush();
+
+    var read_buf: [8192]u8 = undefined;
+    var client_reader = client.reader(io, &read_buf);
+    const r = &client_reader.interface;
+
+    const status_line = try readLine(r);
+    try std.testing.expect(std.mem.indexOf(u8, status_line, "200") != null);
+
+    var saw_multipart_header = false;
+    while (true) {
+        const line = try readLine(r);
+        if (line.len == 1 and line[0] == '\r') break; // blank line ends the top-level response headers
+        if (std.mem.indexOf(u8, line, "multipart/x-mixed-replace; boundary=" ++ stream_boundary) != null) {
+            saw_multipart_header = true;
+        }
+    }
+    try std.testing.expect(saw_multipart_header);
+
+    // First frame part: boundary line, its own headers, blank line, JPEG bytes.
+    const boundary_line = try readLine(r);
+    try std.testing.expectEqualStrings("--" ++ stream_boundary, boundary_line[0 .. boundary_line.len - 1]); // drop trailing \r
+
+    var part_content_length: ?usize = null;
+    while (true) {
+        const line = try readLine(r);
+        if (line.len == 1 and line[0] == '\r') break;
+        if (std.mem.startsWith(u8, line, "content-length: ")) {
+            part_content_length = try std.fmt.parseInt(usize, line["content-length: ".len .. line.len - 1], 10);
+        }
+    }
+    const len = part_content_length orelse return error.MissingContentLength;
+    const jpeg_bytes = try r.take(len);
+    try std.testing.expectEqual(@as(u8, 0xFF), jpeg_bytes[0]);
+    try std.testing.expectEqual(@as(u8, 0xD8), jpeg_bytes[1]); // JPEG SOI marker
+
+    // Close explicitly (not deferred) and give the server's detached
+    // handler thread time to notice on its next ~100ms-cadence write
+    // attempt and run its own per-iteration cleanup, rather than racing
+    // this test's (and the whole binary's) teardown against a
+    // still-in-flight background allocation.
+    client.close(io);
+    try Io.sleep(io, .fromMilliseconds(400), .awake);
 }
