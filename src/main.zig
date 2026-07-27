@@ -63,8 +63,14 @@ fn runCaptureLoopThread(io: Io, gpa: std.mem.Allocator) void {
     // notice and click the prompt during manual testing, still bounded.
     const result = capture_loop.run(io, gpa, 20_000);
     // capture_loop.run() only returns on permission/session-setup
-    // failure (a running session blocks forever).
+    // failure (a running session blocks forever), so this is always
+    // fatal -- exit instead of leaving the heartbeat loop and HTTP
+    // server running forever against a camera that will never produce
+    // a frame. Exit code 0: this is an expected environmental condition
+    // (no camera, permission not granted, ...), not a crash, so `zig
+    // build run` doesn't report it as a failed build step.
     std.debug.print("capture loop exited early: {t}\n", .{result});
+    std.process.exit(0);
 }
 
 fn runHttpThread(io: Io, gpa: std.mem.Allocator, address: Io.net.IpAddress) void {
