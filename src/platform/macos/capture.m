@@ -288,3 +288,113 @@ void w2i_free_jpeg(w2i_jpeg_t *jpeg) {
         jpeg->data = NULL;
     }
 }
+
+@interface W2IContinuousCaptureDelegate : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
+@property(atomic, assign) w2i_frame_callback_t callback;
+/* CIContext is documented by Apple as expensive to create and meant to
+ * be created once and reused -- NOT recreated per frame. A first
+ * implementation that did recreate it per frame showed slow, steady
+ * memory growth (~14KB/s) over a 2-minute soak test; caching it here
+ * is the fix, not just a micro-optimization. */
+@property(atomic, strong) CIContext *ciContext;
+@end
+
+@implementation W2IContinuousCaptureDelegate {
+    CGColorSpaceRef _colorSpace;
+}
+
+- (instancetype)init {
+    self = [super init];
+    if (self != nil) {
+        _ciContext = [CIContext contextWithOptions:nil];
+        _colorSpace = CGColorSpaceCreateDeviceRGB();
+    }
+    return self;
+}
+
+- (void)dealloc {
+    CGColorSpaceRelease(_colorSpace);
+}
+
+- (void)captureOutput:(AVCaptureOutput *)output
+    didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
+            fromConnection:(AVCaptureConnection *)connection {
+    @autoreleasepool {
+        CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+        if (pixelBuffer == NULL) {
+            return;
+        }
+
+        size_t width = CVPixelBufferGetWidth(pixelBuffer);
+        size_t height = CVPixelBufferGetHeight(pixelBuffer);
+        size_t bytesPerRow = width * 4;
+
+        uint8_t *buffer = malloc(bytesPerRow * height);
+        if (buffer == NULL) {
+            return;
+        }
+
+        CIImage *ciImage = [CIImage imageWithCVPixelBuffer:pixelBuffer];
+        [self.ciContext render:ciImage
+                       toBitmap:buffer
+                       rowBytes:(NSInteger)bytesPerRow
+                         bounds:CGRectMake(0, 0, (CGFloat)width, (CGFloat)height)
+                         format:kCIFormatRGBA8
+                     colorSpace:_colorSpace];
+
+        if (self.callback != NULL) {
+            self.callback(buffer, (int32_t)width, (int32_t)height, (int32_t)bytesPerRow);
+        }
+
+        free(buffer);
+    }
+}
+@end
+
+w2i_capture_result_t w2i_capture_run_continuous(int32_t setup_timeout_ms, w2i_frame_callback_t callback) {
+    @autoreleasepool {
+        if (defaultCameraDeviceOrNil() == nil) {
+            return W2I_CAPTURE_NO_CAMERA;
+        }
+
+        w2i_capture_result_t auth = ensureCameraAuthorized(setup_timeout_ms);
+        if (auth != W2I_CAPTURE_OK) {
+            return auth;
+        }
+
+        AVCaptureDevice *device = defaultCameraDeviceOrNil();
+        NSError *error = nil;
+        AVCaptureDeviceInput *input = [AVCaptureDeviceInput deviceInputWithDevice:device error:&error];
+        if (input == nil) {
+            return W2I_CAPTURE_SESSION_ERROR;
+        }
+
+        AVCaptureSession *session = [[AVCaptureSession alloc] init];
+        if (![session canAddInput:input]) {
+            return W2I_CAPTURE_SESSION_ERROR;
+        }
+        [session addInput:input];
+
+        W2IContinuousCaptureDelegate *delegate = [[W2IContinuousCaptureDelegate alloc] init];
+        delegate.callback = callback;
+        AVCaptureVideoDataOutput *output = [[AVCaptureVideoDataOutput alloc] init];
+        dispatch_queue_t queue = dispatch_queue_create("com.webcam2ip.continuous-capture", DISPATCH_QUEUE_SERIAL);
+        [output setSampleBufferDelegate:delegate queue:queue];
+
+        if (![session canAddOutput:output]) {
+            return W2I_CAPTURE_SESSION_ERROR;
+        }
+        [session addOutput:output];
+
+        [session startRunning];
+
+        /* Run forever -- keeps this thread (and the ObjC objects above,
+         * which nothing else retains) alive for the process lifetime.
+         * Frame delivery itself happens on the dispatch queue above,
+         * independent of this run loop; this loop mainly exists so the
+         * function never returns and its locals never get deallocated. */
+        while (true) {
+            [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate distantFuture]];
+        }
+    }
+}

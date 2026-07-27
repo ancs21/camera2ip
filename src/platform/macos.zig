@@ -114,6 +114,18 @@ pub fn freeJpeg(jpeg: *Jpeg) void {
     w2i_free_jpeg(jpeg);
 }
 
+pub const FrameCallback = *const fn (rgba: [*]const u8, width: i32, height: i32, bytes_per_row: i32) callconv(.c) void;
+
+extern "c" fn w2i_capture_run_continuous(setup_timeout_ms: i32, callback: FrameCallback) i32;
+
+/// Starts a persistent capture session on the calling thread and pumps
+/// its run loop forever, invoking `callback` synchronously for each
+/// frame. Only returns early on a permission/session-setup failure --
+/// call from a dedicated thread that lives for the process lifetime.
+pub fn runCaptureContinuous(setup_timeout_ms: i32, callback: FrameCallback) CaptureResult {
+    return @enumFromInt(w2i_capture_run_continuous(setup_timeout_ms, callback));
+}
+
 test "encodeJpegRgba produces bytes with valid JPEG SOI/EOI markers" {
     // 4x4 solid-red RGBA, tightly packed -- content doesn't matter here,
     // only that ImageIO actually produces a real JPEG bitstream.

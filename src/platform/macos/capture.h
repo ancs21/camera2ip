@@ -82,6 +82,22 @@ bool w2i_encode_jpeg_rgba(const uint8_t *rgba, int32_t width, int32_t height, in
  * already-freed or zeroed jpeg. */
 void w2i_free_jpeg(w2i_jpeg_t *jpeg);
 
+/* Called synchronously on the capture delegate's serial queue for every
+ * frame -- keep it fast. rgba is only valid for the duration of the
+ * call (freed immediately after); copy anything you need to keep. */
+typedef void (*w2i_frame_callback_t)(const uint8_t *rgba, int32_t width, int32_t height, int32_t bytes_per_row);
+
+/*
+ * Starts a persistent AVCaptureSession on the CALLING thread (same
+ * permission/run-loop contract as w2i_capture_probe_run) and then pumps
+ * this thread's run loop FOREVER, invoking `callback` with each
+ * converted RGBA8 frame as it arrives. Only returns early on a
+ * permission/session-setup failure -- a running session never returns
+ * under normal operation, so call this from a dedicated thread that
+ * lives for the process lifetime.
+ */
+w2i_capture_result_t w2i_capture_run_continuous(int32_t setup_timeout_ms, w2i_frame_callback_t callback);
+
 #ifdef __cplusplus
 }
 #endif

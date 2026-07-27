@@ -2,6 +2,7 @@ const std = @import("std");
 const Io = std.Io;
 const macos = @import("platform/macos.zig");
 const http = @import("http.zig");
+const capture_loop = @import("capture_loop.zig");
 
 const app_name = "webcam2ip";
 const app_version = "0.1.0";
@@ -28,6 +29,7 @@ pub fn writePpm(writer: *Io.Writer, width: i32, height: i32, bytes_per_row: i32,
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
+    const gpa = init.gpa;
 
     var stdout_buffer: [256]u8 = undefined;
     var stdout_file_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
@@ -35,56 +37,46 @@ pub fn main(init: std.process.Init) !void {
 
     try writeBanner(stdout);
     try stdout.print("objc shim greeting length: {d}\n", .{macos.shimGreetingLength()});
-    try stdout.writeAll("capturing one frame on a dedicated thread (grant the permission prompt if macOS shows one)...\n");
+    try stdout.writeAll("starting continuous capture on a dedicated thread (grant the permission prompt if macOS shows one)...\n");
     try stdout.flush();
 
-    var capture_result: CaptureThreadResult = undefined;
-    const capture_thread = try std.Thread.spawn(.{}, runCaptureFrameThread, .{&capture_result});
-    capture_thread.join();
+    const capture_thread = try std.Thread.spawn(.{}, runCaptureLoopThread, .{ io, gpa });
+    capture_thread.detach();
 
-    const frame = capture_result catch |err| {
-        try stdout.print("capture failed: {t}\n", .{err});
+    // Debug harness: soak-tests the capture hand-off in isolation,
+    // before any HTTP code (T10/T11) depends on it. Refreshes frame.jpg
+    // every second so content changes (not just the frame counter) can
+    // be visually confirmed during a long-running manual soak test.
+    var elapsed_seconds: u32 = 0;
+    while (true) : (elapsed_seconds += 1) {
+        try Io.sleep(io, .fromSeconds(1), .awake);
+
+        if (try capture_loop.copyLatestFrame(io, gpa)) |frame| {
+            defer gpa.free(frame.data);
+
+            var jpeg_file = try Io.Dir.cwd().createFile(io, "frame.jpg", .{});
+            defer jpeg_file.close(io);
+            var jpeg_write_buf: [4096]u8 = undefined;
+            var jpeg_writer = jpeg_file.writer(io, &jpeg_write_buf);
+            try jpeg_writer.interface.writeAll(frame.data);
+            try jpeg_writer.interface.flush();
+
+            try stdout.print("[{d}s] frame {d}x{d}, {d} bytes -> frame.jpg\n", .{ elapsed_seconds, frame.width, frame.height, frame.data.len });
+        } else {
+            try stdout.print("[{d}s] waiting for first frame...\n", .{elapsed_seconds});
+        }
         try stdout.flush();
-        return;
-    };
-    var mutable_frame = frame;
-    defer macos.freeFrame(&mutable_frame);
-
-    const rgba = frame.data.?[0..@intCast(frame.bytes_per_row * frame.height)];
-
-    var ppm_file = try Io.Dir.cwd().createFile(io, "frame.ppm", .{});
-    defer ppm_file.close(io);
-    var ppm_write_buf: [4096]u8 = undefined;
-    var ppm_writer = ppm_file.writer(io, &ppm_write_buf);
-    try writePpm(&ppm_writer.interface, frame.width, frame.height, frame.bytes_per_row, rgba);
-    try ppm_writer.interface.flush();
-
-    var jpeg = try macos.encodeJpegRgba(frame.width, frame.height, frame.bytes_per_row, rgba);
-    defer macos.freeJpeg(&jpeg);
-
-    var jpeg_file = try Io.Dir.cwd().createFile(io, "frame.jpg", .{});
-    defer jpeg_file.close(io);
-    var jpeg_write_buf: [4096]u8 = undefined;
-    var jpeg_writer = jpeg_file.writer(io, &jpeg_write_buf);
-    try jpeg_writer.interface.writeAll(jpeg.data.?[0..@intCast(jpeg.length)]);
-    try jpeg_writer.interface.flush();
-
-    try stdout.print("wrote frame.ppm and frame.jpg ({d}x{d})\n", .{ frame.width, frame.height });
-
-    const address = try Io.net.IpAddress.parseLiteral("127.0.0.1:8080");
-    try stdout.writeAll("listening on 127.0.0.1:8080\n");
-    try stdout.flush();
-
-    try http.serve(io, &address);
+    }
 }
 
-const CaptureThreadResult = macos.CaptureFrameError!macos.Frame;
-
-fn runCaptureFrameThread(out_result: *CaptureThreadResult) void {
-    // 20s per phase (permission wait, first-frame wait) -- generous
-    // enough for a human to notice and click the permission prompt
-    // during manual testing, still bounded so it can't hang forever.
-    out_result.* = macos.captureFrameRgba(20_000);
+fn runCaptureLoopThread(io: Io, gpa: std.mem.Allocator) void {
+    // 20s permission-wait timeout -- generous enough for a human to
+    // notice and click the prompt during manual testing, still bounded.
+    const result = capture_loop.run(io, gpa, 20_000);
+    // capture_loop.run() only returns on permission/session-setup
+    // failure (a running session blocks forever) -- there's no HTTP
+    // server yet to report this to, so note it plainly.
+    std.debug.print("capture loop exited early: {t}\n", .{result});
 }
 
 // Spike code proving Zig 0.16's Io.net stack works, in isolation from
@@ -176,6 +168,7 @@ test {
     // and http.zig's tests to actually run under `zig build test`.
     _ = macos;
     _ = http;
+    _ = capture_loop;
 }
 
 test "writeBanner prints app name, version, and scaffold marker" {
