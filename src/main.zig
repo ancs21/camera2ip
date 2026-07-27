@@ -60,6 +60,34 @@ fn connectAndExpectPong(io: Io, address: *const Io.net.IpAddress) !void {
     try std.testing.expectEqualStrings("pong", reply.?);
 }
 
+// Spike proving an `io` handle is safe to use for Io.Mutex locking from a
+// thread not itself spawned through any Io-managed mechanism -- exactly
+// the situation the real capture thread (T9) will be in.
+const SharedCounter = struct {
+    mutex: Io.Mutex = .init,
+    value: usize = 0,
+};
+
+fn incrementMany(io: Io, shared: *SharedCounter, times: usize) !void {
+    for (0..times) |_| {
+        try shared.mutex.lock(io);
+        defer shared.mutex.unlock(io);
+        shared.value += 1;
+    }
+}
+
+test "Io.Mutex guards a counter incremented concurrently from two threads sharing one io handle" {
+    const io = std.testing.io;
+    var shared = SharedCounter{};
+    const iterations_per_thread = 200_000;
+
+    const other_thread = try std.Thread.spawn(.{}, incrementMany, .{ io, &shared, iterations_per_thread });
+    try incrementMany(io, &shared, iterations_per_thread);
+    other_thread.join();
+
+    try std.testing.expectEqual(@as(usize, iterations_per_thread * 2), shared.value);
+}
+
 test "raw Io.net echo server survives repeated sequential connections" {
     const io = std.testing.io;
     const connection_count = 5;
