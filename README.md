@@ -31,6 +31,26 @@ find your LAN IP with: ipconfig getifaddr $(route get default | awk '/interface:
 Run that command (or check **System Settings → Wi-Fi → Details**) to
 find the URL other devices on your network should use.
 
+## Release build
+
+`zig build` defaults to `-Doptimize=ReleaseSmall` — this app's hot path
+(JPEG encode, overlay draw, camera session management) runs inside the
+ObjC/AVFoundation shim, not perf-sensitive Zig code, so binary size is
+the more useful axis to optimize than speed. Override when needed:
+
+```sh
+zig build -Doptimize=Debug       # backtraces, safety checks, for iterating
+zig build -Doptimize=ReleaseSafe # optimized, safety checks kept
+zig build -Doptimize=ReleaseFast # optimized for speed over size
+```
+
+The result (`zig-out/bin/webcam2ip`) is a single ~220KB arm64 Mach-O
+binary, dynamically linked only against system frameworks (Foundation,
+AVFoundation, etc. — always present on macOS). It isn't code-signed or
+notarized, so a copy downloaded from elsewhere may need a Gatekeeper
+override on first launch (right-click → Open, or
+`xattr -d com.apple.quarantine <path>`).
+
 ## Endpoints
 
 | Path | What you get |
