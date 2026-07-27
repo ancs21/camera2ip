@@ -60,11 +60,21 @@ Re-running resolves it.
 - **No authentication.** Anyone who can reach the machine's IP on port
   8080 can view the stream. Fine for a trusted home network, not for
   anything more exposed.
-- **CPU usage is high (100%+) even when idle.** The capture loop
-  encodes every camera frame continuously, whether or not anyone is
-  watching `/stream` or `/snapshot.jpg`. This is a deliberate v1
-  simplification, not a leak — verified stable in Activity Monitor and
-  with `leaks` over multi-minute runs.
+- **CPU usage is high (100%+) even when idle, and not fully explained.**
+  Frame processing is throttled to ~10fps (both at the camera-driver
+  level via `activeVideoMinFrameDuration` and as a software backstop),
+  and per-frame object allocation was profiled and fixed where found —
+  yet overall CPU didn't drop proportionally. Per-thread profiling
+  (`sample`, `top -stats th,cpu`) shows the process running **56
+  threads**, most spawned internally by AVFoundation/CoreMedia/
+  ANEServices for camera session management, not by this codebase's
+  own capture loop. The dominant cost appears to be in that internal
+  session machinery rather than anything under this project's control,
+  but confirming that precisely would need Instruments-level
+  time-based profiling, not just sample-based inference — left as an
+  open question rather than guessed at further. Not a leak either way —
+  verified stable (not growing) in Activity Monitor and with `leaks`
+  over multi-minute runs.
 - **macOS only.** Uses AVFoundation/CoreImage/ImageIO/CoreText via a
   thin Objective-C shim (`src/platform/macos/`). Raspberry Pi/ESP32
   support would need a separate platform backend.
