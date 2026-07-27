@@ -68,7 +68,9 @@ fn onFrame(rgba: [*]u8, width: i32, height: i32, bytes_per_row: i32) callconv(.c
     // monotonic (unaffected by wall-clock adjustments) for the fps/cpu
     // delta; .real is wall-clock, used only for the displayed date/time.
     const now_ns = Io.Timestamp.now(g_io, .awake).nanoseconds;
-    const unix_secs: i64 = @intCast(@divTrunc(Io.Timestamp.now(g_io, .real).nanoseconds, std.time.ns_per_s));
+    const utc_secs: i64 = @intCast(@divTrunc(Io.Timestamp.now(g_io, .real).nanoseconds, std.time.ns_per_s));
+    const display_offset_secs: i64 = 7 * std.time.s_per_hour; // GMT+7 for the overlay's displayed time
+    const unix_secs = utc_secs + display_offset_secs;
     const stats = macos.getProcessStats();
 
     g_slot.mutex.lock(g_io) catch return;
