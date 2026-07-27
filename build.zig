@@ -21,6 +21,8 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkFramework("AVFoundation", .{});
     exe.root_module.linkFramework("CoreMedia", .{});
     exe.root_module.linkFramework("CoreVideo", .{});
+    exe.root_module.linkFramework("CoreImage", .{});
+    exe.root_module.linkFramework("CoreGraphics", .{});
     exe.root_module.linkSystemLibrary("objc", .{});
     exe.root_module.link_libc = true;
 

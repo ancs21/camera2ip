@@ -9,6 +9,22 @@ pub fn writeBanner(writer: *Io.Writer) Io.Writer.Error!void {
     try writer.print("{s} v{s} — scaffold ok\n", .{ app_name, app_version });
 }
 
+/// Writes `rgba` (tightly packed, bytes_per_row == width*4) as a binary
+/// PPM (P6), dropping the alpha channel. Pure conversion logic, kept
+/// separate from the camera call so it's testable without hardware.
+pub fn writePpm(writer: *Io.Writer, width: i32, height: i32, bytes_per_row: i32, rgba: []const u8) Io.Writer.Error!void {
+    try writer.print("P6\n{d} {d}\n255\n", .{ width, height });
+    var y: i32 = 0;
+    while (y < height) : (y += 1) {
+        const row_start: usize = @intCast(y * bytes_per_row);
+        var x: i32 = 0;
+        while (x < width) : (x += 1) {
+            const pixel_start = row_start + @as(usize, @intCast(x)) * 4;
+            try writer.writeAll(rgba[pixel_start .. pixel_start + 3]);
+        }
+    }
+}
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
 
@@ -18,22 +34,39 @@ pub fn main(init: std.process.Init) !void {
 
     try writeBanner(stdout);
     try stdout.print("objc shim greeting length: {d}\n", .{macos.shimGreetingLength()});
-    try stdout.writeAll("starting camera capture probe on a dedicated thread (grant the permission prompt if macOS shows one)...\n");
+    try stdout.writeAll("capturing one frame on a dedicated thread (grant the permission prompt if macOS shows one)...\n");
     try stdout.flush();
 
-    var probe_result: macos.CaptureProbeResult = undefined;
-    const probe_thread = try std.Thread.spawn(.{}, runCaptureProbeThread, .{&probe_result});
-    probe_thread.join();
+    var capture_result: CaptureThreadResult = undefined;
+    const capture_thread = try std.Thread.spawn(.{}, runCaptureFrameThread, .{&capture_result});
+    capture_thread.join();
 
-    try stdout.print("capture probe result: {s}\n", .{@tagName(probe_result)});
+    const frame = capture_result catch |err| {
+        try stdout.print("capture failed: {t}\n", .{err});
+        try stdout.flush();
+        return;
+    };
+    var mutable_frame = frame;
+    defer macos.freeFrame(&mutable_frame);
+
+    var file = try Io.Dir.cwd().createFile(io, "frame.ppm", .{});
+    defer file.close(io);
+    var file_write_buf: [4096]u8 = undefined;
+    var file_writer = file.writer(io, &file_write_buf);
+    try writePpm(&file_writer.interface, frame.width, frame.height, frame.bytes_per_row, frame.data.?[0..@intCast(frame.bytes_per_row * frame.height)]);
+    try file_writer.interface.flush();
+
+    try stdout.print("wrote frame.ppm ({d}x{d})\n", .{ frame.width, frame.height });
     try stdout.flush();
 }
 
-fn runCaptureProbeThread(out_result: *macos.CaptureProbeResult) void {
+const CaptureThreadResult = macos.CaptureFrameError!macos.Frame;
+
+fn runCaptureFrameThread(out_result: *CaptureThreadResult) void {
     // 20s per phase (permission wait, first-frame wait) -- generous
     // enough for a human to notice and click the permission prompt
     // during manual testing, still bounded so it can't hang forever.
-    out_result.* = macos.captureProbe(20_000);
+    out_result.* = macos.captureFrameRgba(20_000);
 }
 
 // Spike code proving Zig 0.16's Io.net stack works, in isolation from
@@ -131,4 +164,18 @@ test "writeBanner prints app name, version, and scaffold marker" {
     var w: Io.Writer = .fixed(&buf);
     try writeBanner(&w);
     try std.testing.expectEqualStrings("webcam2ip v0.1.0 — scaffold ok\n", w.buffered());
+}
+
+test "writePpm drops alpha and emits a valid binary P6 header" {
+    // 2x1 RGBA, tightly packed: red pixel, then green pixel.
+    const rgba = [_]u8{
+        255, 0, 0, 111, // red, alpha ignored
+        0, 255, 0, 222, // green, alpha ignored
+    };
+    var buf: [64]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    try writePpm(&w, 2, 1, 8, &rgba);
+
+    const expected = "P6\n2 1\n255\n" ++ [_]u8{ 255, 0, 0, 0, 255, 0 };
+    try std.testing.expectEqualSlices(u8, expected, w.buffered());
 }
