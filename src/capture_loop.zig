@@ -51,6 +51,32 @@ pub const Frame = struct {
     height: i32,
 };
 
+/// Test-only: seeds the module context and stores `rgba` as the latest
+/// frame, bypassing the real capture session. Exposed so other
+/// modules' tests (e.g. http.zig's /snapshot.jpg test) don't depend on
+/// this file's own tests having already run first to initialize
+/// things -- explicit over implicit cross-file test ordering.
+pub fn seedFrameForTesting(io: Io, gpa: std.mem.Allocator, rgba: []const u8, width: i32, height: i32, bytes_per_row: i32) void {
+    g_io = io;
+    g_gpa = gpa;
+    onFrame(rgba.ptr, width, height, bytes_per_row);
+}
+
+/// Test-only: resets the frame slot to its initial (no frame yet)
+/// state. The slot is a global shared across the whole test binary,
+/// potentially concurrently with earlier tests' still-finishing
+/// detached connection-handler threads -- so this must take the same
+/// lock every other accessor does, not just poke the field directly
+/// (an earlier unsynchronized version of this function caused an
+/// intermittent "switch on corrupt value" crash inside Io.Mutex
+/// itself, consistent with the data race it was).
+pub fn resetForTesting(io: Io) void {
+    g_io = io;
+    g_slot.mutex.lock(io) catch return;
+    defer g_slot.mutex.unlock(io);
+    g_slot.frame_count = 0;
+}
+
 /// Copies the latest JPEG frame into `allocator`-owned memory (caller
 /// frees). Returns null if no frame has arrived yet.
 pub fn copyLatestFrame(io: Io, allocator: std.mem.Allocator) !?Frame {
@@ -66,10 +92,8 @@ pub fn copyLatestFrame(io: Io, allocator: std.mem.Allocator) !?Frame {
 }
 
 test "copyLatestFrame returns null before any frame has arrived" {
-    // Uses the real module-level slot -- fine since this test runs
-    // before any other test in this file touches it (see next test,
-    // which then leaves frame_count > 0 for the rest of the process).
     const io = std.testing.io;
+    resetForTesting(io); // don't assume this runs before other tests touch the global slot
     const result = try copyLatestFrame(io, std.testing.allocator);
     try std.testing.expectEqual(@as(?Frame, null), result);
 }

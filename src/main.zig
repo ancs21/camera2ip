@@ -43,10 +43,16 @@ pub fn main(init: std.process.Init) !void {
     const capture_thread = try std.Thread.spawn(.{}, runCaptureLoopThread, .{ io, gpa });
     capture_thread.detach();
 
-    // Debug harness: soak-tests the capture hand-off in isolation,
-    // before any HTTP code (T10/T11) depends on it. Refreshes frame.jpg
-    // every second so content changes (not just the frame counter) can
-    // be visually confirmed during a long-running manual soak test.
+    const address = try Io.net.IpAddress.parseLiteral("127.0.0.1:8080");
+    const http_thread = try std.Thread.spawn(.{}, runHttpThread, .{ io, gpa, address });
+    http_thread.detach();
+    try stdout.writeAll("listening on 127.0.0.1:8080 (GET /snapshot.jpg)\n");
+    try stdout.flush();
+
+    // Debug harness: also soak-tests the capture hand-off directly, in
+    // parallel with the HTTP server. Refreshes frame.jpg every second
+    // so content changes (not just the frame counter) can be visually
+    // confirmed during a long-running manual soak test.
     var elapsed_seconds: u32 = 0;
     while (true) : (elapsed_seconds += 1) {
         try Io.sleep(io, .fromSeconds(1), .awake);
@@ -74,9 +80,14 @@ fn runCaptureLoopThread(io: Io, gpa: std.mem.Allocator) void {
     // notice and click the prompt during manual testing, still bounded.
     const result = capture_loop.run(io, gpa, 20_000);
     // capture_loop.run() only returns on permission/session-setup
-    // failure (a running session blocks forever) -- there's no HTTP
-    // server yet to report this to, so note it plainly.
+    // failure (a running session blocks forever).
     std.debug.print("capture loop exited early: {t}\n", .{result});
+}
+
+fn runHttpThread(io: Io, gpa: std.mem.Allocator, address: Io.net.IpAddress) void {
+    http.serve(io, gpa, &address) catch |err| {
+        std.debug.print("http server exited early: {t}\n", .{err});
+    };
 }
 
 // Spike code proving Zig 0.16's Io.net stack works, in isolation from
