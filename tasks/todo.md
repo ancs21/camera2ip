@@ -16,7 +16,7 @@ Full detail (acceptance criteria, verification, files, sizing) in `tasks/plan.md
 ## Phase 1: Capture spike (no network)
 - [x] T5 — AVFoundation session + delegate callback proof (M, highest uncertainty)
 - [x] T6 — Raw pixel extraction → `.ppm` (S/M)
-- [ ] T7 — JPEG encode via ImageIO → `.jpg` (M)
+- [x] T7 — JPEG encode via ImageIO → `.jpg` (M)
 
 ### Checkpoint: Phase 1
 - [ ] Single frame captures from the real camera and becomes a valid, correctly-colored JPEG on disk
