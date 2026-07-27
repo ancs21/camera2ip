@@ -60,23 +60,36 @@ var g_io: Io = undefined;
 var g_gpa: std.mem.Allocator = undefined;
 var g_slot: FrameSlot = .{};
 
+/// Target interval between *processed* frames (~10fps). The camera
+/// delivers frames much faster than this, and profiling (macOS
+/// `sample`) showed the pipeline below -- JPEG encoding especially --
+/// is genuinely expensive per call; skipping most frames rather than
+/// encoding every single one is the biggest lever on CPU cost.
+const target_frame_interval_ns: i96 = 100 * std.time.ns_per_ms;
+
 fn onFrame(rgba: [*]u8, width: i32, height: i32, bytes_per_row: i32) callconv(.c) void {
     const len: usize = @as(usize, @intCast(bytes_per_row)) * @as(usize, @intCast(height));
 
     // Zig 0.16 moved wall-clock/monotonic time under Io.Timestamp --
     // std.time.timestamp()/nanoTimestamp() no longer exist. .awake is
     // monotonic (unaffected by wall-clock adjustments) for the fps/cpu
-    // delta; .real is wall-clock, used only for the displayed date/time.
+    // delta and the throttle check; .real is wall-clock, used only for
+    // the displayed date/time.
     const now_ns = Io.Timestamp.now(g_io, .awake).nanoseconds;
-    const utc_secs: i64 = @intCast(@divTrunc(Io.Timestamp.now(g_io, .real).nanoseconds, std.time.ns_per_s));
-    const display_offset_secs: i64 = 7 * std.time.s_per_hour; // GMT+7 for the overlay's displayed time
-    const unix_secs = utc_secs + display_offset_secs;
-    const stats = macos.getProcessStats();
 
     g_slot.mutex.lock(g_io) catch return;
     const prev_frame_ns = g_slot.last_frame_ns;
     const prev_cpu_seconds = g_slot.last_cpu_seconds;
     g_slot.mutex.unlock(g_io);
+
+    if (prev_frame_ns) |prev_ns| {
+        if (now_ns - prev_ns < target_frame_interval_ns) return;
+    }
+
+    const utc_secs: i64 = @intCast(@divTrunc(Io.Timestamp.now(g_io, .real).nanoseconds, std.time.ns_per_s));
+    const display_offset_secs: i64 = 7 * std.time.s_per_hour; // GMT+7 for the overlay's displayed time
+    const unix_secs = utc_secs + display_offset_secs;
+    const stats = macos.getProcessStats();
 
     var fps: f64 = 0;
     var cpu_percent: f64 = 0;
@@ -149,6 +162,13 @@ pub fn resetForTesting(io: Io) void {
     g_slot.mutex.lock(io) catch return;
     defer g_slot.mutex.unlock(io);
     g_slot.frame_count = 0;
+    // Also clears the throttle timing state -- without this, a test's
+    // first onFrame call could itself be throttled (or not) depending
+    // on how much real wall-clock time happened to pass since whatever
+    // earlier test last touched the shared global slot, which is
+    // exactly the kind of cross-test ordering fragility this function
+    // exists to avoid.
+    g_slot.last_frame_ns = null;
 }
 
 /// Copies the latest JPEG frame into `allocator`-owned memory (caller
@@ -180,9 +200,9 @@ test "copyLatestFrame returns null before any frame has arrived" {
     try std.testing.expectEqual(@as(?Frame, null), result);
 }
 
-test "onFrame updates the slot on every call, not just the first" {
+test "onFrame updates the slot on every processed call, not just the first" {
     const io = std.testing.io;
-    g_io = io;
+    resetForTesting(io); // don't let another test's throttle timing leak in
     // g_slot.jpeg is a module-level global that (correctly, in
     // production) lives for the whole process and is never explicitly
     // freed -- std.testing.allocator's leak checker doesn't know that's
@@ -193,6 +213,11 @@ test "onFrame updates the slot on every call, not just the first" {
 
     var red = [_]u8{ 255, 0, 0, 255 } ** 4; // 2x2 solid red, tightly packed
     onFrame(&red, 2, 2, 8);
+
+    // Past the throttle window (see the dedicated throttle test above
+    // for the "arrives too soon, gets skipped" case) -- this call
+    // should actually be processed.
+    try Io.sleep(io, .fromMilliseconds(150), .awake);
 
     const first = (try copyLatestFrame(io, std.testing.allocator)).?;
     defer std.testing.allocator.free(first.data);
@@ -205,4 +230,25 @@ test "onFrame updates the slot on every call, not just the first" {
     defer std.testing.allocator.free(second.data);
     try std.testing.expectEqual(@as(i32, 3), second.width);
     try std.testing.expect(!std.mem.eql(u8, first.data, second.data));
+}
+
+test "onFrame throttles: a frame arriving faster than the target interval is skipped" {
+    const io = std.testing.io;
+    resetForTesting(io); // guarantee this test's first call isn't itself throttled by another test's leftover timing
+    g_gpa = std.heap.page_allocator; // see "updates the slot" test above for why
+
+    var red = [_]u8{ 255, 0, 0, 255 } ** 4; // 2x2 solid red
+    onFrame(&red, 2, 2, 8);
+    const first = (try copyLatestFrame(io, std.testing.allocator)).?;
+    defer std.testing.allocator.free(first.data);
+
+    // Immediately after, well under the throttle window -- should be
+    // skipped, leaving the slot showing the first frame unchanged.
+    var blue = [_]u8{ 0, 0, 255, 255 } ** 9; // 3x3 solid blue -- would differ if processed
+    onFrame(&blue, 3, 3, 12);
+    const second = (try copyLatestFrame(io, std.testing.allocator)).?;
+    defer std.testing.allocator.free(second.data);
+
+    try std.testing.expectEqual(@as(i32, 2), second.width); // still the first frame's size
+    try std.testing.expectEqualSlices(u8, first.data, second.data);
 }

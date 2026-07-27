@@ -303,13 +303,24 @@ void w2i_free_jpeg(w2i_jpeg_t *jpeg) {
 
 @implementation W2IContinuousCaptureDelegate {
     CGColorSpaceRef _colorSpace;
+    CFAbsoluteTime _lastProcessedTime;
 }
+
+/* Target interval between *processed* frames (~10fps). The camera
+ * delivers frames much faster than this. Checked here, before the
+ * CVPixelBuffer->RGBA conversion below, not just in Zig's onFrame --
+ * profiling showed that conversion (CIContext render, GPU/Metal work)
+ * is itself a major cost, and a throttle placed only after it (as an
+ * earlier version of this code did, in Zig) still paid that cost on
+ * every single camera frame, saving only the JPEG-encode step. */
+static const CFTimeInterval kMinFrameIntervalSeconds = 0.1;
 
 - (instancetype)init {
     self = [super init];
     if (self != nil) {
         _ciContext = [CIContext contextWithOptions:nil];
         _colorSpace = CGColorSpaceCreateDeviceRGB();
+        _lastProcessedTime = 0;
     }
     return self;
 }
@@ -322,6 +333,12 @@ void w2i_free_jpeg(w2i_jpeg_t *jpeg) {
     didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
             fromConnection:(AVCaptureConnection *)connection {
     @autoreleasepool {
+        CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+        if (_lastProcessedTime != 0 && (now - _lastProcessedTime) < kMinFrameIntervalSeconds) {
+            return;
+        }
+        _lastProcessedTime = now;
+
         CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
         if (pixelBuffer == NULL) {
             return;
@@ -369,6 +386,27 @@ w2i_capture_result_t w2i_capture_run_continuous(int32_t setup_timeout_ms, w2i_fr
         AVCaptureDeviceInput *input = [AVCaptureDeviceInput deviceInputWithDevice:device error:&error];
         if (input == nil) {
             return W2I_CAPTURE_SESSION_ERROR;
+        }
+
+        /* Ask the camera hardware/driver itself to only deliver ~10fps,
+         * not just discard extra frames in software after the fact.
+         * Profiling found that a software-only throttle (return early
+         * in the delegate below, or in Zig's onFrame) barely moved CPU
+         * usage even once it was confirmed working (overlay showed the
+         * intended ~8fps) -- AVFoundation's own internal capture
+         * pipeline (sensor read + format conversion) was still running
+         * at the camera's native ~24-30fps regardless of how many of
+         * the delivered frames got processed further. This is the
+         * actual fix; the delegate-level throttle below is now mostly
+         * a backstop for whatever rate the hardware actually settles
+         * on (device frame rate requests are a preference, not a
+         * hard guarantee). */
+        NSError *lockError = nil;
+        if ([device lockForConfiguration:&lockError]) {
+            CMTime frameDuration = CMTimeMake(1, 10); // 1/10s = 10fps
+            device.activeVideoMinFrameDuration = frameDuration;
+            device.activeVideoMaxFrameDuration = frameDuration;
+            [device unlockForConfiguration];
         }
 
         AVCaptureSession *session = [[AVCaptureSession alloc] init];
@@ -441,8 +479,28 @@ void w2i_draw_overlay_rgba(uint8_t *rgba, int32_t width, int32_t height, int32_t
             return;
         }
 
-        CTFontRef font = CTFontCreateWithName(CFSTR("Menlo"), 16.0, NULL);
-        CGColorRef white = CGColorCreateGenericRGB(1, 1, 1, 1);
+        /* Cached, not recreated per call: CTFontCreateWithName does real
+         * font lookup/matching work, and this function runs ~10-30x/sec
+         * in production. Profiling (macOS `sample`) showed this exact
+         * per-frame-recreation pattern was already a real, fixed cost
+         * once for CIContext (see the T9 capture delegate) -- same
+         * class of mistake, same fix.
+         *
+         * Plain lazy-init, not dispatch_once: dispatch_once triggered a
+         * crash ("invalid enum value" from Zig's UBSan runtime deep
+         * inside libdispatch's own _dispatch_once) under this specific
+         * build toolchain -- a real interaction bug between Zig 0.16's
+         * UBSan instrumentation and Apple's dispatch_once implementation,
+         * not something fixable from this file. Not a problem in
+         * practice: this function is always called from the capture
+         * delegate's single serial dispatch queue in production, so
+         * there's no real concurrent-first-call race to guard against. */
+        static CTFontRef font;
+        static CGColorRef white;
+        if (font == NULL) {
+            font = CTFontCreateWithName(CFSTR("Menlo"), 16.0, NULL);
+            white = CGColorCreateGenericRGB(1, 1, 1, 1);
+        }
         NSDictionary *attrs = @{
             (id)kCTFontAttributeName : (__bridge id)font,
             (id)kCTForegroundColorAttributeName : (__bridge id)white,
@@ -466,8 +524,7 @@ void w2i_draw_overlay_rgba(uint8_t *rgba, int32_t width, int32_t height, int32_t
 
         CFRelease(line);
         CFRelease(attrString);
-        CGColorRelease(white);
-        CFRelease(font);
+        // font/white are cached (see dispatch_once above) -- not released.
         CGContextRelease(ctx);
     }
 }
