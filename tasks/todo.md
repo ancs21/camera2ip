@@ -6,7 +6,7 @@ Full detail (acceptance criteria, verification, files, sizing) in `tasks/plan.md
 - [x] T1 — Bare project scaffold (S)
 - [x] T2 — ObjC↔Zig FFI spike (S)
 - [x] T3 — Zig 0.16 `Io.net` spike (S/M)
-- [ ] T4 — `Io.Mutex` + cross-thread spike (S)
+- [x] T4 — `Io.Mutex` + cross-thread spike (S)
 
 ### Checkpoint: Phase 0
 - [ ] ObjC/Foundation linking works, ownership convention documented
