@@ -340,7 +340,7 @@ void w2i_draw_overlay_rgba(uint8_t *rgba, int32_t width, int32_t height, int32_t
 
         CFRelease(line);
         CFRelease(attrString);
-        // font/white are cached (see dispatch_once above) -- not released.
+        // font/white are cached (see the lazy-init check above) -- not released.
         CGContextRelease(ctx);
     }
 }
