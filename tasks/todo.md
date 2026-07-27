@@ -25,7 +25,7 @@ Full detail (acceptance criteria, verification, files, sizing) in `tasks/plan.md
 ## Phase 2: Networked snapshot
 - [x] T8 — HTTP server skeleton (M)
 - [x] T9 — Long-lived capture loop + mutex-guarded latest-frame slot (M/L, second-highest risk)
-- [ ] T10 — Wire `/snapshot.jpg` (S)
+- [x] T10 — Wire `/snapshot.jpg` (S)
 
 ### Checkpoint: Phase 2
 - [ ] `/snapshot.jpg` returns real, fresh camera JPEGs over HTTP
