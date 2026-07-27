@@ -1,6 +1,7 @@
 const std = @import("std");
 const Io = std.Io;
 const macos = @import("platform/macos.zig");
+const http = @import("http.zig");
 
 const app_name = "webcam2ip";
 const app_version = "0.1.0";
@@ -69,7 +70,12 @@ pub fn main(init: std.process.Init) !void {
     try jpeg_writer.interface.flush();
 
     try stdout.print("wrote frame.ppm and frame.jpg ({d}x{d})\n", .{ frame.width, frame.height });
+
+    const address = try Io.net.IpAddress.parseLiteral("127.0.0.1:8080");
+    try stdout.writeAll("listening on 127.0.0.1:8080\n");
     try stdout.flush();
+
+    try http.serve(io, &address);
 }
 
 const CaptureThreadResult = macos.CaptureFrameError!macos.Frame;
@@ -167,8 +173,9 @@ test "raw Io.net echo server survives repeated sequential connections" {
 test {
     // `@import` alone does not pull a file's `test` blocks into the binary
     // (see zig skill std-testing.md) -- this forces platform/macos.zig's
-    // tests to actually run under `zig build test`.
+    // and http.zig's tests to actually run under `zig build test`.
     _ = macos;
+    _ = http;
 }
 
 test "writeBanner prints app name, version, and scaffold marker" {
