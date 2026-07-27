@@ -5,7 +5,7 @@ const http = @import("http.zig");
 const capture_loop = @import("capture_loop.zig");
 
 const app_name = "webcam2ip";
-const app_version = "0.1.0";
+const app_version = "2026.07.27";
 
 pub fn writeBanner(writer: *Io.Writer) Io.Writer.Error!void {
     try writer.print("{s} v{s} — scaffold ok\n", .{ app_name, app_version });
@@ -95,5 +95,5 @@ test "writeBanner prints app name, version, and scaffold marker" {
     var buf: [128]u8 = undefined;
     var w: Io.Writer = .fixed(&buf);
     try writeBanner(&w);
-    try std.testing.expectEqualStrings("webcam2ip v0.1.0 — scaffold ok\n", w.buffered());
+    try std.testing.expectEqualStrings("webcam2ip v2026.07.27 — scaffold ok\n", w.buffered());
 }
