@@ -4,8 +4,8 @@ Full detail (acceptance criteria, verification, files, sizing) in `tasks/plan.md
 
 ## Phase 0: Foundation & De-risking
 - [x] T1 — Bare project scaffold (S)
-- [ ] T2 — ObjC↔Zig FFI spike (S)
-- [ ] T3 — Zig 0.16 `Io.net` spike (S/M)
+- [x] T2 — ObjC↔Zig FFI spike (S)
+- [x] T3 — Zig 0.16 `Io.net` spike (S/M)
 - [ ] T4 — `Io.Mutex` + cross-thread spike (S)
 
 ### Checkpoint: Phase 0
