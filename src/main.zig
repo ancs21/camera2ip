@@ -1,5 +1,6 @@
 const std = @import("std");
 const Io = std.Io;
+const macos = @import("platform/macos.zig");
 
 const app_name = "webcam2ip";
 const app_version = "0.1.0";
@@ -16,7 +17,15 @@ pub fn main(init: std.process.Init) !void {
     const stdout = &stdout_file_writer.interface;
 
     try writeBanner(stdout);
+    try stdout.print("objc shim greeting length: {d}\n", .{macos.shimGreetingLength()});
     try stdout.flush();
+}
+
+test {
+    // `@import` alone does not pull a file's `test` blocks into the binary
+    // (see zig skill std-testing.md) -- this forces platform/macos.zig's
+    // tests to actually run under `zig build test`.
+    _ = macos;
 }
 
 test "writeBanner prints app name, version, and scaffold marker" {

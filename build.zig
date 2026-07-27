@@ -12,6 +12,14 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    exe.root_module.addCSourceFile(.{
+        .file = b.path("src/platform/macos/shim.m"),
+        .flags = &.{"-fobjc-arc"},
+    });
+    exe.root_module.linkFramework("Foundation", .{});
+    exe.root_module.linkSystemLibrary("objc", .{});
+    exe.root_module.link_libc = true;
+
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
