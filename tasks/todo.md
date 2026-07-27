@@ -14,8 +14,8 @@ Full detail (acceptance criteria, verification, files, sizing) in `tasks/plan.md
 - [ ] `Io.Mutex` cross-thread locking proven correct across 10+ runs
 
 ## Phase 1: Capture spike (no network)
-- [ ] T5 — AVFoundation session + delegate callback proof (M, highest uncertainty)
-- [ ] T6 — Raw pixel extraction → `.ppm` (S/M)
+- [x] T5 — AVFoundation session + delegate callback proof (M, highest uncertainty)
+- [x] T6 — Raw pixel extraction → `.ppm` (S/M)
 - [ ] T7 — JPEG encode via ImageIO → `.jpg` (M)
 
 ### Checkpoint: Phase 1
