@@ -33,7 +33,7 @@ Full detail (acceptance criteria, verification, files, sizing) in `tasks/plan.md
 
 ## Phase 3: Live MJPEG stream (v1 done)
 - [x] T11 — `/stream` MJPEG handler (M)
-- [ ] T12 — Multi-client sanity pass + README (S)
+- [x] T12 — Multi-client sanity pass + README (S)
 
 ### Checkpoint: Phase 3 = v1 complete
 - [ ] Browser at `/stream` shows live video
