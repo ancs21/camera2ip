@@ -45,9 +45,25 @@ fn handleConnection(io: Io, gpa: std.mem.Allocator, conn: Io.net.Stream) void {
     handleRequest(io, gpa, &request) catch return;
 }
 
+// keep_alive = false on every respond()/respondStreaming() call below:
+// handleConnection calls receiveHead() exactly once per connection and
+// then closes it regardless (see below), so this server never actually
+// reuses a connection for a second request -- keep-alive was providing
+// no real benefit. It was, however, actively dangerous: std.http.Server's
+// default keep_alive=true means respond() calls discardBody() to
+// drain any declared-but-undelivered request body, and a state-machine
+// bug in Zig 0.16.0's Reader.discardRemaining() (EndOfStream treated
+// as success without reaching the `.ready` state discardBody then
+// asserts on) turns a client that declares a body and disconnects
+// before sending it into a full process crash -- verified live via
+// `nc` and reproduced in the test below. Setting keep_alive=false
+// skips discardBody entirely, closing this off structurally rather
+// than depending on a stdlib bug getting fixed upstream.
+
 fn handleRequest(io: Io, gpa: std.mem.Allocator, request: *std.http.Server.Request) !void {
     if (std.mem.eql(u8, request.head.target, "/")) {
         try request.respond("webcam2ip\n", .{
+            .keep_alive = false,
             .extra_headers = &.{.{ .name = "content-type", .value = "text/plain" }},
         });
         return;
@@ -63,6 +79,7 @@ fn handleRequest(io: Io, gpa: std.mem.Allocator, request: *std.http.Server.Reque
 
     try request.respond("not found\n", .{
         .status = .not_found,
+        .keep_alive = false,
         .extra_headers = &.{.{ .name = "content-type", .value = "text/plain" }},
     });
 }
@@ -75,6 +92,7 @@ fn handleSnapshot(io: Io, gpa: std.mem.Allocator, request: *std.http.Server.Requ
     const frame = maybe_frame orelse {
         try request.respond("not ready yet\n", .{
             .status = .service_unavailable,
+            .keep_alive = false,
             .extra_headers = &.{.{ .name = "content-type", .value = "text/plain" }},
         });
         return;
@@ -82,6 +100,7 @@ fn handleSnapshot(io: Io, gpa: std.mem.Allocator, request: *std.http.Server.Requ
     defer gpa.free(frame.data);
 
     try request.respond(frame.data, .{
+        .keep_alive = false,
         .extra_headers = &.{.{ .name = "content-type", .value = "image/jpeg" }},
     });
 }
@@ -97,6 +116,7 @@ fn handleStream(io: Io, gpa: std.mem.Allocator, request: *std.http.Server.Reques
     var body_writer = try request.respondStreaming(&respond_buf, .{
         .respond_options = .{
             .transfer_encoding = .none,
+            .keep_alive = false,
             .extra_headers = &.{
                 .{ .name = "content-type", .value = "multipart/x-mixed-replace; boundary=" ++ stream_boundary },
             },
@@ -298,4 +318,46 @@ test "GET /stream sends a multipart frame whose boundary matches the header" {
     // still-in-flight background allocation.
     client.close(io);
     try Io.sleep(io, .fromMilliseconds(400), .awake);
+}
+
+test "a POST with an undelivered body does not crash the server" {
+    // Regression test for a real, verified DoS: std.http.Server's
+    // default keep_alive=true means discardBody() runs when a request
+    // declares a body that never arrives, and a state-machine bug in
+    // Zig 0.16.0's Reader.discardRemaining() (EndOfStream treated as
+    // success without reaching the `.ready` state discardBody then
+    // asserts on) panics the whole process, not just this connection.
+    const io = std.testing.io;
+    const address = try Io.net.IpAddress.parseLiteral("127.0.0.1:17177");
+    const test_server = try startTestServer(io, std.testing.allocator, &address);
+    defer test_server.stop();
+
+    // Declare a body that never arrives, then disconnect before sending it.
+    {
+        var client = try address.connect(io, .{ .mode = .stream });
+        defer client.close(io);
+        var write_buf: [256]u8 = undefined;
+        var client_writer = client.writer(io, &write_buf);
+        try client_writer.interface.writeAll("POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 999999999\r\n\r\n");
+        try client_writer.interface.flush();
+    }
+
+    // Give the server a moment to process (and, if unfixed, crash the
+    // whole test binary -- not just fail this assertion).
+    try Io.sleep(io, .fromMilliseconds(200), .awake);
+
+    // If the process is still alive, an unrelated fresh request on a
+    // new connection should succeed normally.
+    var client2 = try address.connect(io, .{ .mode = .stream });
+    defer client2.close(io);
+
+    var write_buf2: [256]u8 = undefined;
+    var client_writer2 = client2.writer(io, &write_buf2);
+    try client_writer2.interface.writeAll("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    try client_writer2.interface.flush();
+
+    var read_buf2: [1024]u8 = undefined;
+    var client_reader2 = client2.reader(io, &read_buf2);
+    const status_line = try readLine(&client_reader2.interface);
+    try std.testing.expect(std.mem.indexOf(u8, status_line, "200") != null);
 }
