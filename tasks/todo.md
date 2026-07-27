@@ -24,7 +24,7 @@ Full detail (acceptance criteria, verification, files, sizing) in `tasks/plan.md
 
 ## Phase 2: Networked snapshot
 - [x] T8 — HTTP server skeleton (M)
-- [ ] T9 — Long-lived capture loop + mutex-guarded latest-frame slot (M/L, second-highest risk)
+- [x] T9 — Long-lived capture loop + mutex-guarded latest-frame slot (M/L, second-highest risk)
 - [ ] T10 — Wire `/snapshot.jpg` (S)
 
 ### Checkpoint: Phase 2
