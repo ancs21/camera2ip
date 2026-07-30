@@ -1,12 +1,12 @@
 # webcam2ip
 
-Turns a Mac's webcam into a network-reachable IP camera. Written in Zig as a
-learning project: no auth, no UI, no recording. Point a browser or VLC at it
-and see live video.
+Turns a Mac's or Android phone's camera into a network-reachable IP camera.
+Written in Zig as a learning project: no auth, no UI, no recording. Point a
+browser or VLC at it and see live video.
 
 ## Requirements
 
-- macOS
+- macOS, or an Android device on API 30+ (see [Android](#android))
 - Zig 0.16.0 ([zigup](https://github.com/marler8997/zigup) recommended)
 - A camera (built-in or USB)
 
@@ -44,6 +44,50 @@ only against frameworks that ship with macOS. Not code-signed or notarized,
 so a copy from elsewhere may need a Gatekeeper override (right-click → Open,
 or `xattr -d com.apple.quarantine <path>`).
 
+## Android
+
+Same server, same endpoints, running on the phone itself. It builds as a plain
+command-line binary — no APK, no Gradle, no Java — so you push it and run it
+over `adb`:
+
+```sh
+zig build -Dtarget=aarch64-linux-android.30       # NDK found via ANDROID_HOME
+adb push zig-out/bin/webcam2ip /data/local/tmp/
+adb shell chmod 755 /data/local/tmp/webcam2ip
+adb shell /data/local/tmp/webcam2ip
+```
+
+Then reach it from your computer with `adb forward tcp:8080 tcp:8080` (USB), or
+straight over wifi at the phone's LAN IP.
+
+The API level in the target (`.30`) is not optional — the JPEG encoder is
+`AndroidBitmap_compress`, which landed in 30. Point the build at a specific NDK
+with `-Dndk=/path/to/ndk` if `ANDROID_HOME`/`ANDROID_NDK_HOME` isn't set.
+
+Because it runs as a bare process rather than an app, it can't show a
+permission dialog — it inherits the camera access of whatever UID starts it.
+From `adb shell` that's the `shell` user, which holds `android.permission.CAMERA`
+on emulators and userdebug builds. If your device refuses, the process exits
+with `permission_denied`; wrapping the binary in a NativeActivity APK (so it can
+request the permission properly) is the fix, and is not implemented.
+
+If you connect over USB and `adb` never sees the phone, check Samsung's
+**Auto Blocker** (Settings → Security and privacy) — it blocks USB commands
+outright. Wireless debugging sidesteps it entirely and suits this project
+better anyway.
+
+Two known gaps versus the macOS build, both marked in
+`src/platform/android/capture.c`:
+
+- **No overlay.** The timestamp/fps/CPU banner needs a font rasterizer and the
+  NDK has none, so frames go out clean.
+- **The camera runs at its native frame rate.** macOS pins the driver to 10fps;
+  the Android equivalent is device-dependent and can fail session configuration,
+  so frames are dropped after capture instead. Costs power, not CPU.
+
+Frames are rotated to upright using the sensor's reported orientation, so a
+portrait-held phone streams portrait video.
+
 ## Endpoints
 
 | Path | What you get |
@@ -77,9 +121,14 @@ thread-accumulation pattern, not the running program. Re-run if it happens.
   project's capture loop. That looks like the real cost, but confirming it
   needs Instruments-level profiling, so it's left open. Not a leak: memory
   stays flat over multi-minute runs.
-- macOS only. Uses AVFoundation/CoreImage/ImageIO/CoreText through a thin
-  Objective-C shim (`src/platform/macos/`). A Pi or ESP32 port would need
-  its own platform backend.
+- macOS and Android only. Each has its own backend under `src/platform/`
+  (AVFoundation/ImageIO/CoreText via an Objective-C shim; Camera2 NDK +
+  AndroidBitmap via a C shim). A Pi or ESP32 port would need a third one.
+- The Android build is verified end-to-end on a Galaxy A15 (Android 15,
+  arm64): live 480x640 frames over `/snapshot.jpg` and `/stream`. The
+  emulator is *not* a useful test target for it — the headless emulator's
+  fake camera delivers no frames to any client, including the stock camera
+  app.
 - No graceful shutdown. `Ctrl-C` or `kill` the process; there's no cleanup
   handler.
 
@@ -87,9 +136,11 @@ thread-accumulation pattern, not the running program. Re-run if it happens.
 
 ```
 src/
-  main.zig            entry point: spawns the capture thread + HTTP server
-  http.zig            HTTP server, routing, /snapshot.jpg and /stream handlers
+  main.zig             entry point: spawns the capture thread + HTTP server
+  http.zig             HTTP server, routing, /snapshot.jpg and /stream handlers
   capture_loop.zig     mutex-guarded "latest frame" slot, fed by the capture thread
-  platform/macos.zig   Zig bindings for the Objective-C shim below
+  platform.zig         Zig bindings, shared by every backend
+  platform/capture_abi.h  the C ABI every backend implements
   platform/macos/      AVFoundation capture, ImageIO JPEG encode, CoreText overlay
+  platform/android/    Camera2 NDK capture, AndroidBitmap JPEG encode
 ```
