@@ -1,4 +1,4 @@
-#import "capture.h"
+#import "../capture_abi.h"
 #import <AVFoundation/AVFoundation.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <CoreText/CoreText.h>

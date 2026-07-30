@@ -1,6 +1,13 @@
 #ifndef WEBCAM2IP_CAPTURE_H
 #define WEBCAM2IP_CAPTURE_H
 
+/*
+ * The C ABI every platform backend implements (macos/capture.m,
+ * android/capture.c). Lives here rather than next to one of them so
+ * neither backend owns the contract. Zig mirrors it per-platform in
+ * src/platform/<os>.zig.
+ */
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -34,9 +41,10 @@ typedef struct {
 
 /*
  * Encodes tightly-packed RGBA8 pixels (bytes_per_row == width * 4) to
- * JPEG via ImageIO. Pure function of its inputs -- no camera/session
- * involved, callable from any thread, safe to unit test without
- * hardware. Returns false (and zeroes *out_jpeg) on encode failure.
+ * JPEG using whatever the platform provides (ImageIO / AndroidBitmap).
+ * Pure function of its inputs -- no camera/session involved, callable
+ * from any thread, safe to unit test without hardware. Returns false
+ * (and zeroes *out_jpeg) on encode failure.
  */
 bool w2i_encode_jpeg_rgba(const uint8_t *rgba, int32_t width, int32_t height, int32_t bytes_per_row, w2i_jpeg_t *out_jpeg);
 
@@ -51,10 +59,10 @@ void w2i_free_jpeg(w2i_jpeg_t *jpeg);
 typedef void (*w2i_frame_callback_t)(uint8_t *rgba, int32_t width, int32_t height, int32_t bytes_per_row);
 
 /*
- * Starts a persistent AVCaptureSession on the CALLING thread: requests
- * camera permission if needed, configures a session with the default
- * video device, starts it, and pumps this thread's run loop FOREVER,
- * invoking `callback` with each converted RGBA8 frame as it arrives.
+ * Starts a persistent capture session on the CALLING thread: acquires
+ * camera permission if the platform needs it, configures a session with
+ * the default video device, starts it, and drives frame delivery on
+ * this thread FOREVER, invoking `callback` with each RGBA8 frame.
  * Only returns early on a permission/session-setup failure -- a running
  * session never returns under normal operation, so call this from a
  * dedicated thread (not the Zig main/HTTP thread) that lives for the

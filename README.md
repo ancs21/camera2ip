@@ -1,59 +1,74 @@
 # webcam2ip
 
-Turns a Mac's webcam into a network-reachable IP camera. Written in Zig as a
+Turns a Mac's or Android phone's camera into an IP camera. Written in Zig as a
 learning project: no auth, no UI, no recording. Point a browser or VLC at it
-and see live video.
+and watch.
 
 ## Requirements
 
-- macOS
+- macOS, or Android on API 30+
 - Zig 0.16.0 ([zigup](https://github.com/marler8997/zigup) recommended)
-- A camera (built-in or USB)
+- A camera
 
-## Build & run
+## macOS
 
 ```sh
 zig build run
 ```
 
-macOS prompts for camera access on first run; click **Allow**. No prompt
-usually means your terminal app already has permission (check **System
-Settings → Privacy & Security → Camera**).
+The first run asks for camera access. No prompt usually means your terminal
+already has it (System Settings, Privacy & Security, Camera). On startup it
+prints the port plus a command for finding your LAN IP, which is the address
+other devices should use.
 
-```
-listening on 0.0.0.0:8080 -- reachable at http://<this-machine's-LAN-IP>:8080
-find your LAN IP with: ipconfig getifaddr $(route get default | awk '/interface:/{print $2}')
-```
+`zig build` defaults to `-Doptimize=ReleaseSmall`, since the hot path lives in
+the ObjC shim rather than in Zig. Use `-Doptimize=Debug` for backtraces and
+safety checks. You get a ~220KB binary linked only against system frameworks.
+It isn't signed, so a copy from another machine may need
+`xattr -d com.apple.quarantine`.
 
-Run that command, or check **System Settings → Wi-Fi → Details**, for the
-URL other devices should use.
+## Android
 
-## Release build
-
-`zig build` defaults to `-Doptimize=ReleaseSmall` since the hot path runs in
-the ObjC/AVFoundation shim, not Zig, so size matters more than speed here.
+The same server, running on the phone. No APK, no Gradle, no Java: it builds
+as a command-line binary you push over adb.
 
 ```sh
-zig build -Doptimize=Debug       # backtraces, safety checks
-zig build -Doptimize=ReleaseSafe # optimized, safety checks kept
-zig build -Doptimize=ReleaseFast # optimized for speed
+zig build -Dtarget=aarch64-linux-android.30   # NDK found via ANDROID_HOME
+adb push zig-out/bin/webcam2ip /data/local/tmp/
+adb shell chmod 755 /data/local/tmp/webcam2ip
+adb shell /data/local/tmp/webcam2ip
 ```
 
-Result: a single ~220KB arm64 Mach-O binary (`zig-out/bin/webcam2ip`), linked
-only against frameworks that ship with macOS. Not code-signed or notarized,
-so a copy from elsewhere may need a Gatekeeper override (right-click → Open,
-or `xattr -d com.apple.quarantine <path>`).
+Reach it with `adb forward tcp:8080 tcp:8080`, or over wifi at the phone's LAN
+IP. The `.30` is required, not cosmetic: the JPEG encoder is
+`AndroidBitmap_compress`, which landed in API 30. Pass `-Dndk=/path/to/ndk` if
+`ANDROID_HOME` isn't set.
+
+A bare process can't show a permission dialog, so it inherits the camera access
+of whatever UID starts it. From `adb shell` that's the `shell` user, which
+normally holds it. If your device refuses, the process exits with
+`permission_denied`, and the fix (wrapping it in a NativeActivity APK) isn't
+implemented.
+
+Frames arrive upright, rotated using the sensor's reported orientation. Two
+things differ from the macOS build. There's no overlay, because the NDK ships
+no font rasterizer. And the camera runs at its native frame rate instead of
+being pinned to 10fps, so surplus frames get dropped after capture, which costs
+power rather than CPU.
+
+If adb can't see a Samsung phone over USB, it's usually Auto Blocker (Settings,
+Security and privacy). Wireless debugging avoids it.
 
 ## Endpoints
 
 | Path | What you get |
 |---|---|
 | `/` | Plain-text banner, confirms the server is up |
-| `/snapshot.jpg` | A single current JPEG frame |
-| `/stream` | Live MJPEG video (`multipart/x-mixed-replace`); open in a browser or VLC via File → Open Network... |
+| `/snapshot.jpg` | One current JPEG frame |
+| `/stream` | Live MJPEG (`multipart/x-mixed-replace`); works in a browser or in VLC |
 
-Every frame carries a small overlay in the top-left: app name, time, fps,
-CPU%, RAM.
+On macOS every frame carries a small overlay in the top-left: app name, time,
+fps, CPU%, RAM.
 
 ## Testing
 
@@ -61,35 +76,29 @@ CPU%, RAM.
 zig build test
 ```
 
-Unit tests plus real-socket integration tests. Rarely (about 1 in 50-100
-runs) a test hits an intermittent crash in the suite's own
-thread-accumulation pattern, not the running program. Re-run if it happens.
+Unit tests plus real-socket integration tests. Roughly 1 run in 50-100 hits an
+intermittent crash in the test suite's own thread-accumulation pattern, not in
+the server. Re-run it.
 
-## Known characteristics (not bugs)
+## Known characteristics
 
-- No authentication. Anyone who can reach the machine's IP on port 8080 can
-  view the stream. Fine on a trusted home network, not for anything more
-  exposed.
-- CPU usage runs high (100%+) even at idle. Frames are throttled to ~10fps
-  and per-frame allocations are already tight, but CPU doesn't drop
-  proportionally. Most of the 56 threads running under the process come from
-  AVFoundation/CoreMedia/ANEServices' own camera session machinery, not this
-  project's capture loop. That looks like the real cost, but confirming it
-  needs Instruments-level profiling, so it's left open. Not a leak: memory
-  stays flat over multi-minute runs.
-- macOS only. Uses AVFoundation/CoreImage/ImageIO/CoreText through a thin
-  Objective-C shim (`src/platform/macos/`). A Pi or ESP32 port would need
-  its own platform backend.
-- No graceful shutdown. `Ctrl-C` or `kill` the process; there's no cleanup
-  handler.
+- No authentication. Anyone who can reach port 8080 can watch. Fine on a home
+  network, less fine on café wifi, which a phone joins far more often than a
+  desktop does.
+- CPU sits high (100%+) even at idle on macOS. Frames are throttled to ~10fps
+  and per-frame allocations are tight, but most of the 56 threads in the
+  process belong to AVFoundation's own session machinery rather than to the
+  capture loop. Confirming that needs Instruments, so it stays open. Memory
+  holds flat over long runs, so it isn't a leak.
+- Android is verified on a Galaxy A15 (Android 15, arm64). The emulator is
+  useless for testing capture: its fake camera feeds no frames to any client,
+  including the stock camera app.
+- No graceful shutdown. Ctrl-C it.
 
-## Project layout
+## Layout
 
-```
-src/
-  main.zig            entry point: spawns the capture thread + HTTP server
-  http.zig            HTTP server, routing, /snapshot.jpg and /stream handlers
-  capture_loop.zig     mutex-guarded "latest frame" slot, fed by the capture thread
-  platform/macos.zig   Zig bindings for the Objective-C shim below
-  platform/macos/      AVFoundation capture, ImageIO JPEG encode, CoreText overlay
-```
+`main.zig` spawns the capture thread and the HTTP server, then logs a
+heartbeat. `capture_loop.zig` owns the mutex-guarded latest-frame slot that
+everything else reads. `http.zig` serves it. `platform.zig` and
+`platform/capture_abi.h` define the contract that `platform/macos/` and
+`platform/android/` implement.

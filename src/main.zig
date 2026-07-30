@@ -1,6 +1,6 @@
 const std = @import("std");
 const Io = std.Io;
-const macos = @import("platform/macos.zig");
+const platform = @import("platform.zig");
 const http = @import("http.zig");
 const capture_loop = @import("capture_loop.zig");
 
@@ -20,8 +20,10 @@ pub fn main(init: std.process.Init) !void {
     const stdout = &stdout_file_writer.interface;
 
     try writeBanner(stdout);
-    try stdout.print("objc shim greeting length: {d}\n", .{macos.shimGreetingLength()});
-    try stdout.writeAll("starting continuous capture on a dedicated thread (grant the permission prompt if macOS shows one)...\n");
+    if (platform.has_objc_shim) {
+        try stdout.print("objc shim greeting length: {d}\n", .{platform.shimGreetingLength()});
+    }
+    try stdout.writeAll("starting continuous capture on a dedicated thread (grant the permission prompt if one appears)...\n");
     try stdout.flush();
 
     const capture_thread = try std.Thread.spawn(.{}, runCaptureLoopThread, .{ io, gpa });
@@ -81,9 +83,9 @@ fn runHttpThread(io: Io, gpa: std.mem.Allocator, address: Io.net.IpAddress) void
 
 test {
     // `@import` alone does not pull a file's `test` blocks into the binary
-    // (see zig skill std-testing.md) -- this forces platform/macos.zig's
-    // and http.zig's tests to actually run under `zig build test`.
-    _ = macos;
+    // (see zig skill std-testing.md) -- this forces the platform
+    // backend's and http.zig's tests to actually run under `zig build test`.
+    _ = platform;
     _ = http;
     _ = capture_loop;
 }
