@@ -1,6 +1,6 @@
 const std = @import("std");
 const Io = std.Io;
-const macos = @import("platform/macos.zig");
+const platform = @import("platform.zig");
 
 /// Holds the most recent captured frame as JPEG bytes. Readers copy the
 /// bytes out while holding the lock (a fast memcpy) rather than the
@@ -89,7 +89,7 @@ fn onFrame(rgba: [*]u8, width: i32, height: i32, bytes_per_row: i32) callconv(.c
     const utc_secs: i64 = @intCast(@divTrunc(Io.Timestamp.now(g_io, .real).nanoseconds, std.time.ns_per_s));
     const display_offset_secs: i64 = 7 * std.time.s_per_hour; // GMT+7 for the overlay's displayed time
     const unix_secs = utc_secs + display_offset_secs;
-    const stats = macos.getProcessStats();
+    const stats = platform.getProcessStats();
 
     var fps: f64 = 0;
     var cpu_percent: f64 = 0;
@@ -104,11 +104,11 @@ fn onFrame(rgba: [*]u8, width: i32, height: i32, bytes_per_row: i32) callconv(.c
 
     var text_buf: [128]u8 = undefined;
     if (formatOverlayText(&text_buf, overlay_name, fps, cpu_percent, stats.rss_bytes, unix_secs)) |text| {
-        macos.drawOverlayRgba(rgba[0..len], width, height, bytes_per_row, text);
+        platform.drawOverlayRgba(rgba[0..len], width, height, bytes_per_row, text);
     } else |_| {}
 
-    var jpeg = macos.encodeJpegRgba(width, height, bytes_per_row, rgba[0..len]) catch return;
-    defer macos.freeJpeg(&jpeg);
+    var jpeg = platform.encodeJpegRgba(width, height, bytes_per_row, rgba[0..len]) catch return;
+    defer platform.freeJpeg(&jpeg);
     const bytes = jpeg.data.?[0..@intCast(jpeg.length)];
 
     g_slot.mutex.lock(g_io) catch return;
@@ -126,12 +126,12 @@ fn onFrame(rgba: [*]u8, width: i32, height: i32, bytes_per_row: i32) callconv(.c
 }
 
 /// Starts the continuous capture session on the calling thread (which
-/// must be a dedicated thread -- see macos.runCaptureContinuous). Only
+/// must be a dedicated thread -- see platform.runCaptureContinuous). Only
 /// returns early on a permission/session-setup failure.
-pub fn run(io: Io, gpa: std.mem.Allocator, setup_timeout_ms: i32) macos.CaptureResult {
+pub fn run(io: Io, gpa: std.mem.Allocator, setup_timeout_ms: i32) platform.CaptureResult {
     g_io = io;
     g_gpa = gpa;
-    return macos.runCaptureContinuous(setup_timeout_ms, &onFrame);
+    return platform.runCaptureContinuous(setup_timeout_ms, &onFrame);
 }
 
 pub const Frame = struct {
